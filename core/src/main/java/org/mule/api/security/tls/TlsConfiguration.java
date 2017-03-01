@@ -6,6 +6,7 @@
  */
 package org.mule.api.security.tls;
 
+import static java.lang.String.format;
 import static org.mule.api.config.MuleProperties.SYSTEM_PROPERTY_PREFIX;
 
 import org.mule.api.lifecycle.CreateException;
@@ -22,28 +23,35 @@ import org.mule.util.StringUtils;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.security.GeneralSecurityException;
+import java.security.InvalidAlgorithmParameterException;
 import java.security.KeyManagementException;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
-import java.security.Security;
 import java.security.cert.CRL;
+import java.security.cert.CertPathBuilder;
 import java.security.cert.CertStore;
-import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.security.cert.CollectionCertStoreParameters;
 import java.security.cert.PKIXBuilderParameters;
+import java.security.cert.PKIXRevocationChecker;
+import java.security.cert.PKIXRevocationChecker.Option;
 import java.security.cert.TrustAnchor;
 import java.security.cert.X509CertSelector;
 import java.security.cert.X509Certificate;
 import java.util.Collection;
-import java.util.Collections;
+import java.util.EnumSet;
 import java.util.Enumeration;
+import java.util.HashSet;
+import java.util.Set;
 
 import javax.net.ssl.CertPathTrustManagerParameters;
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.ManagerFactoryParameters;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLServerSocketFactory;
 import javax.net.ssl.SSLSocketFactory;
@@ -172,6 +180,21 @@ public final class TlsConfiguration
     private TlsProperties tlsProperties = new TlsProperties();
     private boolean disableSystemPropertiesMapping = true;
 
+    // standard certificate revocation checking
+    private Boolean rcStandardEnable;
+    private Boolean rcStandardOnlyEndEntities;
+    private Boolean rcStandardPreferCrls;
+    private Boolean rcStandardNoFallback;
+    private Boolean rcStandardSoftFail;
+
+    // CRL file revocation checking
+    private String rcCrlFilePath;
+
+    // custom OCSP revocation checking
+    private String rcCustomOcspUrl;
+    private String rcCustomOcspCertPath;
+    private String trustStoreCrlFile;
+
     /**
      * Support for TLS connections with a given initial value for the key store
      *
@@ -223,7 +246,7 @@ public final class TlsConfiguration
             new TlsPropertiesMapper(namespace).writeToProperties(System.getProperties(), this);
         }
 
-        tlsProperties.load(String.format(PROPERTIES_FILE_PATTERN, SecurityUtils.getSecurityModel()));
+        tlsProperties.load(format(PROPERTIES_FILE_PATTERN, SecurityUtils.getSecurityModel()));
     }
 
     private void validate(boolean anon) throws CreateException
@@ -319,54 +342,41 @@ public final class TlsConfiguration
     {
         if (null != trustStoreName)
         {
-            trustStorePassword = null == trustStorePassword ? "" : trustStorePassword;
-
-            KeyStore trustStore;
-            try
-            {
-                trustStore = KeyStore.getInstance(trustStoreType);
-                InputStream is = IOUtils.getResourceAsStream(trustStoreName, getClass());
-                if (null == is)
-                {
-                    throw new FileNotFoundException(
-                            "Failed to load truststore from classpath or local file: " + trustStoreName);
-                }
-                trustStore.load(is, trustStorePassword.toCharArray());
-            }
-            catch (Exception e)
-            {
-                throw new CreateException(
-                        CoreMessages.failedToLoad("TrustStore: " + trustStoreName), e, this);
-            }
+            KeyStore trustStore = createTrustStore();
 
             try
             {
                 trustManagerFactory = TrustManagerFactory.getInstance(trustManagerAlgorithm);
 
+                Boolean revocationEnabled = getRcStandardEnable() || getRcCrlFilePath() != null || getRcCustomOcspUrl() != null;
+                ManagerFactoryParameters tmfParams = null;
 
                 // Revocation checking is only supported for PKIX algorithm
-                if ("PKIX".equalsIgnoreCase(getTrustManagerAlgorithm()))
+                if (revocationEnabled && "PKIX".equalsIgnoreCase(getTrustManagerAlgorithm()))
                 {
-                    Certificate certificate = trustStore.getCertificate("server ca");
+                    if (getRcStandardEnable()) {
+                        tmfParams = configForStandardRevocation(trustStore);
 
-                    PKIXBuilderParameters pbParams = new PKIXBuilderParameters(Collections.singleton(new TrustAnchor((X509Certificate)certificate, null)), new X509CertSelector());
-
-                    // Make sure revocation checking is enabled
-                    pbParams.setRevocationEnabled(true);
-
-                    Collection<? extends CRL> crls = loadCRL("tls/test/crl");
-                    if (crls != null && !crls.isEmpty())
+                    }
+                    else if (getRcCrlFilePath() != null)
                     {
-                        pbParams.addCertStore(CertStore.getInstance("Collection", new CollectionCertStoreParameters(crls)));
+                        tmfParams = configForCrlFileRevocation(trustStore);
+
+                    }
+                    else if (getRcCustomOcspUrl() != null)
+                    {
+                        tmfParams = configForCustomOcspRevocation(trustStore);
                     }
 
-                    Security.setProperty("ocsp.enable", "false");
-                    System.setProperty("com.sun.security.enableCRLDP", "false");
-
-                    trustManagerFactory.init(new CertPathTrustManagerParameters(pbParams));
+                    trustManagerFactory.init(tmfParams);
                 }
                 else
                 {
+                    if (revocationEnabled && !"PKIX".equalsIgnoreCase(getTrustManagerAlgorithm()))
+                    {
+                        logger.warn(format("TLS Context: certificate revocation checking is not available when algorithm is different from PKIX (currently %s)", getTrustManagerAlgorithm()));
+                    }
+
                     trustManagerFactory.init(trustStore);
                 }
             }
@@ -376,6 +386,113 @@ public final class TlsConfiguration
                         CoreMessages.failedToLoad("Trust Manager (" + trustManagerAlgorithm + ")"), e, this);
             }
         }
+    }
+
+    private KeyStore createTrustStore() throws CreateException
+    {
+        trustStorePassword = null == trustStorePassword ? "" : trustStorePassword;
+
+        KeyStore trustStore;
+
+        try
+        {
+            trustStore = KeyStore.getInstance(trustStoreType);
+            InputStream is = IOUtils.getResourceAsStream(trustStoreName, getClass());
+            if (null == is)
+            {
+                throw new FileNotFoundException(
+                        "Failed to load truststore from classpath or local file: " + trustStoreName);
+            }
+            trustStore.load(is, trustStorePassword.toCharArray());
+        }
+        catch (Exception e)
+        {
+            throw new CreateException(
+                    CoreMessages.failedToLoad("TrustStore: " + trustStoreName), e, this);
+        }
+
+        return trustStore;
+    }
+
+    private ManagerFactoryParameters configForStandardRevocation(KeyStore trustStore)
+            throws NoSuchAlgorithmException, KeyStoreException, InvalidAlgorithmParameterException
+    {
+        CertPathBuilder cpb = CertPathBuilder.getInstance("PKIX");
+        PKIXRevocationChecker rc = (PKIXRevocationChecker) cpb.getRevocationChecker();
+
+        Set<Option> options = new HashSet<>();
+        if (getRcStandardOnlyEndEntities())
+        {
+            options.add(Option.ONLY_END_ENTITY);
+        }
+        if (getRcStandardPreferCrls())
+        {
+            options.add(Option.PREFER_CRLS);
+        }
+        if (getRcStandardNoFallback())
+        {
+            options.add(Option.NO_FALLBACK);
+        }
+        if (getRcStandardSoftFail())
+        {
+            options.add(Option.SOFT_FAIL);
+        }
+        rc.setOptions(options);
+
+        PKIXBuilderParameters pkixParams = new PKIXBuilderParameters(trustStore, new X509CertSelector());
+        pkixParams.addCertPathChecker(rc);
+
+        return new CertPathTrustManagerParameters(pkixParams);
+    }
+
+    private ManagerFactoryParameters configForCrlFileRevocation(KeyStore trustStore) throws Exception
+    {
+        ManagerFactoryParameters tmfParams;// When creating build parameters we must manually trust each certificate (which is automatic otherwise)
+        Enumeration<String> aliases = trustStore.aliases();
+        HashSet<TrustAnchor> trustAnchors = new HashSet<>();
+        while (aliases.hasMoreElements())
+        {
+            String alias = aliases.nextElement();
+            if (trustStore.isCertificateEntry(alias))
+            {
+                trustAnchors.add(new TrustAnchor((X509Certificate) trustStore.getCertificate(alias), null));
+            }
+        }
+
+        PKIXBuilderParameters pbParams = new PKIXBuilderParameters(trustAnchors, new X509CertSelector());
+
+        // Make sure revocation checking is enabled (com.sun.net.ssl.checkRevocation)
+        pbParams.setRevocationEnabled(true);
+
+        Collection<? extends CRL> crls = loadCRL(getRcCrlFilePath());
+        if (crls != null && !crls.isEmpty())
+        {
+            pbParams.addCertStore(CertStore.getInstance("Collection", new CollectionCertStoreParameters(crls)));
+        }
+
+        return new CertPathTrustManagerParameters(pbParams);
+    }
+
+    private ManagerFactoryParameters configForCustomOcspRevocation(KeyStore trustStore)
+            throws NoSuchAlgorithmException, KeyStoreException, InvalidAlgorithmParameterException, URISyntaxException
+    {
+        CertPathBuilder cpb = CertPathBuilder.getInstance("PKIX");
+        PKIXRevocationChecker rc = (PKIXRevocationChecker) cpb.getRevocationChecker();
+        rc.setOptions(EnumSet.of(Option.NO_FALLBACK));
+
+        if (getRcCustomOcspUrl() != null)
+        {
+            rc.setOcspResponder(new URI(getRcCustomOcspUrl()));
+        }
+        if (getRcCustomOcspCertPath() != null)
+        {
+            //rc.setOcspResponderCert(null);
+        }
+
+        PKIXBuilderParameters pkixParams = new PKIXBuilderParameters(trustStore, new X509CertSelector());
+        pkixParams.addCertPathChecker(rc);
+
+        return new CertPathTrustManagerParameters(pkixParams);
     }
 
     public Collection<? extends CRL> loadCRL(String crlPath) throws Exception
@@ -475,7 +592,7 @@ public final class TlsConfiguration
 
         if (enabledProtocols != null && !ArrayUtils.contains(enabledProtocols, sslType))
         {
-            throw new IllegalArgumentException(String.format("Protocol %s is not allowed in current configuration", sslType));
+            throw new IllegalArgumentException(format("Protocol %s is not allowed in current configuration", sslType));
         }
 
         this.sslType = sslType;
@@ -709,6 +826,86 @@ public final class TlsConfiguration
         this.keyAlias = keyAlias;
     }
 
+    public Boolean getRcStandardEnable()
+    {
+        return rcStandardEnable;
+    }
+
+    public void setRcStandardEnable(Boolean rcStandardEnable)
+    {
+        this.rcStandardEnable = rcStandardEnable;
+    }
+
+    public Boolean getRcStandardOnlyEndEntities()
+    {
+        return rcStandardOnlyEndEntities;
+    }
+
+    public void setRcStandardOnlyEndEntities(Boolean rcStandardOnlyEndEntities)
+    {
+        this.rcStandardOnlyEndEntities = rcStandardOnlyEndEntities;
+    }
+
+    public Boolean getRcStandardPreferCrls()
+    {
+        return rcStandardPreferCrls;
+    }
+
+    public void setRcStandardPreferCrls(Boolean rcStandardPreferCrls)
+    {
+        this.rcStandardPreferCrls = rcStandardPreferCrls;
+    }
+
+    public Boolean getRcStandardNoFallback()
+    {
+        return rcStandardNoFallback;
+    }
+
+    public void setRcStandardNoFallback(Boolean rcStandardNoFallback)
+    {
+        this.rcStandardNoFallback = rcStandardNoFallback;
+    }
+
+    public Boolean getRcStandardSoftFail()
+    {
+        return rcStandardSoftFail;
+    }
+
+    public void setRcStandardSoftFail(Boolean rcStandardSoftFail)
+    {
+        this.rcStandardSoftFail = rcStandardSoftFail;
+    }
+
+    public String getRcCrlFilePath()
+    {
+        return rcCrlFilePath;
+    }
+
+    public void setRcCrlFilePath(String rcCrlFilePath)
+    {
+        this.rcCrlFilePath = rcCrlFilePath;
+    }
+
+    public String getRcCustomOcspUrl()
+    {
+        return rcCustomOcspUrl;
+    }
+
+    public void setRcCustomOcspUrl(String rcCustomOcspUrl)
+    {
+        this.rcCustomOcspUrl = rcCustomOcspUrl;
+    }
+
+    public String getRcCustomOcspCertPath()
+    {
+        return rcCustomOcspCertPath;
+    }
+
+    public void setRcCustomOcspCertPath(String rcCustomOcspCertPath)
+    {
+        this.rcCustomOcspCertPath = rcCustomOcspCertPath;
+    }
+
     @Override
     public boolean equals(Object o)
     {
@@ -799,6 +996,38 @@ public final class TlsConfiguration
         {
             return false;
         }
+        if (rcStandardEnable != null ? !rcStandardEnable.equals(that.rcStandardEnable) : that.rcStandardEnable != null)
+        {
+            return false;
+        }
+        if (rcStandardOnlyEndEntities != null ? !rcStandardOnlyEndEntities.equals(that.rcStandardOnlyEndEntities) : that.rcStandardOnlyEndEntities != null)
+        {
+            return false;
+        }
+        if (rcStandardPreferCrls != null ? !rcStandardPreferCrls.equals(that.rcStandardPreferCrls) : that.rcStandardPreferCrls != null)
+        {
+            return false;
+        }
+        if (rcStandardNoFallback != null ? !rcStandardNoFallback.equals(that.rcStandardNoFallback) : that.rcStandardNoFallback != null)
+        {
+            return false;
+        }
+        if (rcStandardSoftFail != null ? !rcStandardSoftFail.equals(that.rcStandardSoftFail) : that.rcStandardSoftFail != null)
+        {
+            return false;
+        }
+        if (rcCrlFilePath != null ? !rcCrlFilePath.equals(that.rcCrlFilePath) : that.rcCrlFilePath != null)
+        {
+            return false;
+        }
+        if (rcCustomOcspUrl != null ? !rcCustomOcspUrl.equals(that.rcCustomOcspUrl) : that.rcCustomOcspUrl != null)
+        {
+            return false;
+        }
+        if (rcCustomOcspCertPath != null ? !rcCustomOcspCertPath.equals(that.rcCustomOcspCertPath) : that.rcCustomOcspCertPath != null)
+        {
+            return false;
+        }
 
         return true;
     }
@@ -811,21 +1040,34 @@ public final class TlsConfiguration
         result = hashcodePrimeNumber * result + (keyStoreName != null ? keyStoreName.hashCode() : 0);
         result = hashcodePrimeNumber * result + (keyAlias != null ? keyAlias.hashCode() : 0);
         result = hashcodePrimeNumber * result + (keyPassword != null ? keyPassword.hashCode() : 0);
-        result = hashcodePrimeNumber * result + (keyStorePassword != null ? keyStorePassword.hashCode() : 0);
-        result = hashcodePrimeNumber * result + (keystoreType != null ? keystoreType.hashCode() : 0);
         result = hashcodePrimeNumber * result + (keyManagerAlgorithm != null ? keyManagerAlgorithm.hashCode() : 0);
         result = hashcodePrimeNumber * result + (keyManagerFactory != null ? keyManagerFactory.hashCode() : 0);
+
+        result = hashcodePrimeNumber * result + (keyStorePassword != null ? keyStorePassword.hashCode() : 0);
+        result = hashcodePrimeNumber * result + (keystoreType != null ? keystoreType.hashCode() : 0);
         result = hashcodePrimeNumber * result + (clientKeyStoreName != null ? clientKeyStoreName.hashCode() : 0);
         result = hashcodePrimeNumber * result + (clientKeyStorePassword != null ? clientKeyStorePassword.hashCode() : 0);
         result = hashcodePrimeNumber * result + (clientKeyStoreType != null ? clientKeyStoreType.hashCode() : 0);
+
         result = hashcodePrimeNumber * result + (trustStoreName != null ? trustStoreName.hashCode() : 0);
         result = hashcodePrimeNumber * result + (trustStorePassword != null ? trustStorePassword.hashCode() : 0);
         result = hashcodePrimeNumber * result + (trustStoreType != null ? trustStoreType.hashCode() : 0);
         result = hashcodePrimeNumber * result + (trustManagerAlgorithm != null ? trustManagerAlgorithm.hashCode() : 0);
         result = hashcodePrimeNumber * result + (trustManagerFactory != null ? trustManagerFactory.hashCode() : 0);
         result = hashcodePrimeNumber * result + (explicitTrustStoreOnly ? 1 : 0);
+
         result = hashcodePrimeNumber * result + (requireClientAuthentication ? 1 : 0);
         result = hashcodePrimeNumber * result + (tlsProperties != null ? tlsProperties.hashCode() : 0);
+
+        result = hashcodePrimeNumber * result + (rcStandardEnable != null ? rcStandardEnable.hashCode() : 0);
+        result = hashcodePrimeNumber * result + (rcStandardOnlyEndEntities != null ? rcStandardOnlyEndEntities.hashCode() : 0);
+        result = hashcodePrimeNumber * result + (rcStandardPreferCrls != null ? rcStandardPreferCrls.hashCode() : 0);
+        result = hashcodePrimeNumber * result + (rcStandardNoFallback != null ? rcStandardNoFallback.hashCode() : 0);
+        result = hashcodePrimeNumber * result + (rcStandardSoftFail != null ? rcStandardSoftFail.hashCode() : 0);
+        result = hashcodePrimeNumber * result + (rcCrlFilePath != null ? rcCrlFilePath.hashCode() : 0);
+        result = hashcodePrimeNumber * result + (rcCustomOcspUrl != null ? rcCustomOcspUrl.hashCode() : 0);
+        result = hashcodePrimeNumber * result + (rcCustomOcspCertPath != null ? rcCustomOcspCertPath.hashCode() : 0);
+
         return result;
     }
 }
