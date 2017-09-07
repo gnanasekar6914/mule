@@ -181,11 +181,11 @@ public final class TlsConfiguration
     private boolean disableSystemPropertiesMapping = true;
 
     // standard certificate revocation checking
-    private Boolean rcStandardEnable;
-    private Boolean rcStandardOnlyEndEntities;
-    private Boolean rcStandardPreferCrls;
-    private Boolean rcStandardNoFallback;
-    private Boolean rcStandardSoftFail;
+    private Boolean rcStandardEnable = false;
+    private Boolean rcStandardOnlyEndEntities = false;
+    private Boolean rcStandardPreferCrls = false;
+    private Boolean rcStandardNoFallback = false;
+    private Boolean rcStandardSoftFail = false;
 
     // CRL file revocation checking
     private String rcCrlFilePath;
@@ -193,7 +193,6 @@ public final class TlsConfiguration
     // custom OCSP revocation checking
     private String rcCustomOcspUrl;
     private String rcCustomOcspCertPath;
-    private String trustStoreCrlFile;
 
     /**
      * Support for TLS connections with a given initial value for the key store
@@ -447,7 +446,7 @@ public final class TlsConfiguration
 
     private ManagerFactoryParameters configForCrlFileRevocation(KeyStore trustStore) throws Exception
     {
-        ManagerFactoryParameters tmfParams;// When creating build parameters we must manually trust each certificate (which is automatic otherwise)
+        // When creating build parameters we must manually trust each certificate (which is automatic otherwise)
         Enumeration<String> aliases = trustStore.aliases();
         HashSet<TrustAnchor> trustAnchors = new HashSet<>();
         while (aliases.hasMoreElements())
@@ -1071,5 +1070,3 @@ public final class TlsConfiguration
         return result;
     }
 }
-
-

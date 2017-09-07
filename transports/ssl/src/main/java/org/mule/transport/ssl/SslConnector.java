@@ -166,10 +166,6 @@ public class SslConnector extends TcpConnector
         return tls.getTrustStoreType();
     }
 
-    public String getTrustStoreCrlFile() {
-        return tls.getTrustStoreCrlFile();
-    }
-
     public boolean isExplicitTrustStoreOnly()
     {
         return tls.isExplicitTrustStoreOnly();
