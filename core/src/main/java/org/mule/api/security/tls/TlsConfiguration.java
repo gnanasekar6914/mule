@@ -192,7 +192,7 @@ public final class TlsConfiguration
 
     // custom OCSP revocation checking
     private String rcCustomOcspUrl;
-    private String rcCustomOcspCertPath;
+    private String rcCustomOcspCertAlias;
 
     /**
      * Support for TLS connections with a given initial value for the key store
@@ -483,9 +483,16 @@ public final class TlsConfiguration
         {
             rc.setOcspResponder(new URI(getRcCustomOcspUrl()));
         }
-        if (getRcCustomOcspCertPath() != null)
+        if (getRcCustomOcspCertAlias() != null)
         {
-            //rc.setOcspResponderCert(null);
+            if (trustStore.isCertificateEntry(getRcCustomOcspCertAlias()))
+            {
+                rc.setOcspResponderCert((X509Certificate) trustStore.getCertificate(getRcCustomOcspCertAlias()));
+            }
+            else
+            {
+                throw new IllegalStateException("Key with alias \"" + getRcCustomOcspCertAlias() + "\" was not found");
+            }
         }
 
         PKIXBuilderParameters pkixParams = new PKIXBuilderParameters(trustStore, new X509CertSelector());
@@ -895,14 +902,14 @@ public final class TlsConfiguration
         this.rcCustomOcspUrl = rcCustomOcspUrl;
     }
 
-    public String getRcCustomOcspCertPath()
+    public String getRcCustomOcspCertAlias()
     {
-        return rcCustomOcspCertPath;
+        return rcCustomOcspCertAlias;
     }
 
-    public void setRcCustomOcspCertPath(String rcCustomOcspCertPath)
+    public void setRcCustomOcspCertAlias(String rcCustomOcspCertAlias)
     {
-        this.rcCustomOcspCertPath = rcCustomOcspCertPath;
+        this.rcCustomOcspCertAlias = rcCustomOcspCertAlias;
     }
 
     @Override
@@ -1023,7 +1030,7 @@ public final class TlsConfiguration
         {
             return false;
         }
-        if (rcCustomOcspCertPath != null ? !rcCustomOcspCertPath.equals(that.rcCustomOcspCertPath) : that.rcCustomOcspCertPath != null)
+        if (rcCustomOcspCertAlias != null ? !rcCustomOcspCertAlias.equals(that.rcCustomOcspCertAlias) : that.rcCustomOcspCertAlias != null)
         {
             return false;
         }
@@ -1065,7 +1072,7 @@ public final class TlsConfiguration
         result = hashcodePrimeNumber * result + (rcStandardSoftFail != null ? rcStandardSoftFail.hashCode() : 0);
         result = hashcodePrimeNumber * result + (rcCrlFilePath != null ? rcCrlFilePath.hashCode() : 0);
         result = hashcodePrimeNumber * result + (rcCustomOcspUrl != null ? rcCustomOcspUrl.hashCode() : 0);
-        result = hashcodePrimeNumber * result + (rcCustomOcspCertPath != null ? rcCustomOcspCertPath.hashCode() : 0);
+        result = hashcodePrimeNumber * result + (rcCustomOcspCertAlias != null ? rcCustomOcspCertAlias.hashCode() : 0);
 
         return result;
     }

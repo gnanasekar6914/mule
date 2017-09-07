@@ -308,7 +308,7 @@
         <xsd:attribute name="preferCrls" type="xsd:boolean">
             <xsd:annotation>
                 <xsd:documentation>
-                    Prefer CRLs to OSCP. The default behavior is to prefer OCSP. Defaults to false.
+                    Prefer CRLs to OCSP. The default behavior is to prefer OCSP. Defaults to false.
                 </xsd:documentation>
             </xsd:annotation>
         </xsd:attribute>
@@ -346,14 +346,15 @@
             <xsd:annotation>
                 <xsd:documentation>
                     URL that identifies the location of the OCSP responder. This is used instead of the corresponding field
-                    in the certificate extension
+                    in the certificate extension.
                 </xsd:documentation>
             </xsd:annotation>
         </xsd:attribute>
-        <xsd:attribute name="certSubjectName" type="mule:substitutableString">
+        <xsd:attribute name="certAlias" type="mule:substitutableString">
             <xsd:annotation>
                 <xsd:documentation>
-                    Prefer CRLs to OSCP. The default behavior is to prefer OCSP. Defaults to false.
+                    Alias of the certificate that signs the OCSP response, instead of the corresponding CA.
+                    Must be present in the trust store.
                 </xsd:documentation>
             </xsd:annotation>
         </xsd:attribute>

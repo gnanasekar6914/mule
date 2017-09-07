@@ -356,14 +356,14 @@ public class DefaultTlsContextFactory implements TlsContextFactory, Initialisabl
         tlsConfiguration.setRcCustomOcspUrl(rcCustomOcspUrl);
     }
 
-    public String getRcCustomOcspCertPath()
+    public String getRcCustomOcspCertAlias()
     {
-        return tlsConfiguration.getRcCustomOcspCertPath();
+        return tlsConfiguration.getRcCustomOcspCertAlias();
     }
 
-    public void setRcCustomOcspCertPath(String rcCustomOcspCertPath)
+    public void setRcCustomOcspCertAlias(String rcCustomOcspCertAlias)
     {
-        tlsConfiguration.setRcCustomOcspCertPath(rcCustomOcspCertPath);
+        tlsConfiguration.setRcCustomOcspCertAlias(rcCustomOcspCertAlias);
     }
 
     @Override
