@@ -64,7 +64,7 @@ public class CompositeProcessorChainRouter extends AbstractExecutableComponent i
 
   private BiFunction<InternalEvent, MessageProcessorChain, InternalEvent> processChain() {
     return (event, processorChain) -> {
-      InternalEventContext childContext = child(event.getContext(), ofNullable(getLocation()));
+      InternalEventContext childContext = child(event.getContext(), ofNullable(processorChain.getLocation()));
       return from(processWithChildContext(event, processorChain, childContext))
           // Block until all child contexts are complete
           .doOnNext(result -> from(childContext.getCompletionPublisher()).block())
