@@ -179,6 +179,11 @@ public class MessageProcessors {
     return internalProcessWithChildContext(event, processor, child(event.getContext(), componentLocation), true);
   }
 
+  public static Publisher<InternalEvent> processWithChildContext(InternalEvent event, ReactiveProcessor processor,
+                                                                 InternalEventContext childContext) {
+    return internalProcessWithChildContext(event, processor, childContext, true);
+  }
+
   /**
    * Process a {@link ReactiveProcessor} using a child {@link InternalEventContext}. This is useful if it is necessary to perform
    * processing in a scope and handle an empty result or error locally rather than complete the response for the whole Flow.
